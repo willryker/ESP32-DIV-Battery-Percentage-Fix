@@ -6,7 +6,14 @@
 // #define BOARD_CYD
 // #define BOARD_ESP32_DIV_V1
  #define BOARD_ESP32_DIV_V2
+// ESP32-DIV V2 battery configuration
+// GPIO 2 is shared by the buzzer and battery divider.
+// Disable the buzzer so GPIO 2 can function as an ADC input.
+#define BUZZER_PIN -1
 
+#define BATTERY_ADC_PIN 2
+#define BATTERY_VDIV_R1 100000.0f
+#define BATTERY_VDIV_R2 100000.0f
 // Set to 0 to hide the on-screen touch nav bar (5 footer buttons).
 // Touch button input will still work when this is disabled.
 #define TOUCH_BUTTON_CUE_ENABLED 1
