@@ -494,27 +494,43 @@ StatusBarRadioState getStatusBarBleState() {
 const float R1 = 100000.0;
 const float R2 = 100000.0;
 
+// Lines 497–531
 float readBatteryVoltage() {
-  #if !defined(BATTERY_ADC_PIN) || (BATTERY_ADC_PIN < 0)
+#if !defined(BATTERY_ADC_PIN) || (BATTERY_ADC_PIN < 0)
+
   return NAN;
-  #else
-  const int sampleCount = 10;
-  long sum = 0;
+
+#else
+
+  constexpr int sampleCount = 32;
+
+  pinMode(BATTERY_ADC_PIN, INPUT);
+  analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
+
+  // Discard the first ADC reading after configuring the pin.
+  analogReadMilliVolts(BATTERY_ADC_PIN);
+  delay(2);
+
+  uint64_t totalMillivolts = 0;
 
   for (int i = 0; i < sampleCount; i++) {
-    sum += analogRead(BATTERY_ADC_PIN);
+    totalMillivolts += analogReadMilliVolts(BATTERY_ADC_PIN);
+    delay(2);
   }
 
-  float averageADC = sum / (float)sampleCount;
+  const float averageMillivolts =
+      totalMillivolts / static_cast<float>(sampleCount);
 
-  float pinVoltage = (averageADC / 4095.0f) * 3.3f;
+  const float pinVoltage = averageMillivolts / 1000.0f;
 
-  float outputVoltage = pinVoltage * ((BATTERY_VDIV_R1 + BATTERY_VDIV_R2) / BATTERY_VDIV_R2);
+  const float dividerRatio =
+      (BATTERY_VDIV_R1 + BATTERY_VDIV_R2) /
+      BATTERY_VDIV_R2;
 
-  return outputVoltage;
-  #endif
+  return pinVoltage * dividerRatio;
+
+#endif
 }
-
 float readInternalTemperature() {
   float temperature = temperatureRead();
   return temperature;
