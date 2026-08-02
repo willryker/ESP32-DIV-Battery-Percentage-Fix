@@ -527,7 +527,15 @@ float readBatteryVoltage() {
       (BATTERY_VDIV_R1 + BATTERY_VDIV_R2) /
       BATTERY_VDIV_R2;
 
-  return pinVoltage * dividerRatio;
+  const float vbat = pinVoltage * dividerRatio;
+
+  // GPIO2 is also wired to the buzzer's drive transistor. The ~0.6V divider
+  // bias + USB-charge ripple would keep the buzzer sounding if the pin were left
+  // floating/INPUT. Drive it LOW between reads to clamp the transistor off.
+  pinMode(BATTERY_ADC_PIN, OUTPUT);
+  digitalWrite(BATTERY_ADC_PIN, LOW);
+
+  return vbat;
 
 #endif
 }
@@ -590,7 +598,11 @@ static uint16_t readRawMillivolts() {
     sum += analogReadMilliVolts(BATTERY_ADC_PIN);
     delay(1);
   }
-  return (uint16_t)(sum / 32);
+  const uint16_t mv = (uint16_t)(sum / 32);
+  // Drive GPIO2 low between reads to keep the shared buzzer transistor off.
+  pinMode(BATTERY_ADC_PIN, OUTPUT);
+  digitalWrite(BATTERY_ADC_PIN, LOW);
+  return mv;
 #else
   return 0;
 #endif
