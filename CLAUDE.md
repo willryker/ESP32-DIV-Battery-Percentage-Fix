@@ -64,7 +64,7 @@ guard + `spiBusInit()` (called at top of `setup()`).
   rfidTagStillPresent, rfidTargetSendResponse) locked at source; auth->read/write
   on the same block share one lock; poll loops (readPassiveTargetID/AsTarget/
   getDataTarget) lock per SPI call, never across the multi-second loop. Builds green
-  (Flash ~40% of 4MB, RAM ~36%). Still needs on-hardware validation.
+  (Flash ~40% of 4MB, RAM ~36%). Hardware-validated 2026-08-02 (see Reality check).
 
 Design notes: mutex is recursive (nested locks are safe); do NOT hold the lock
 across blocking radio scans; the always-on status-bar task only reads the SD
@@ -150,6 +150,13 @@ by SD card — with caveats:
   Tools ▸ Update Firmware. No USB needed for app-only changes like our SPI patch.
 
 ## Reality check
-Every green build so far proves it COMPILES, not that it fixes the crashes.
-The real test is flashing and hammering the wardriving + 2.4GHz modules that
-were crashing.
+A green build only proves it COMPILES, not that it fixes the crashes. The real
+test is flashing and hammering the wardriving + 2.4GHz modules that were
+crashing.
+
+**VALIDATED 2026-08-02:** the cross-core stress test PASSED on hardware — a
+background wardriving/pcap SD capture left running while driving SubGHz
+(jammer/replay) and an RFID read, the exact race Phase 1/2/2b close. No
+resets/corruption. Also confirmed independently: 2.4GHz (post NRF24 pin fix) and
+GPS both work. The SPI arbitration patch is now hardware-proven, not just
+compiling.
