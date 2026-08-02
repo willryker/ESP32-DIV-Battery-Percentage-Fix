@@ -44,6 +44,7 @@ namespace {
 
   static bool subghz_sd_mounted = false;
   static bool subghzMountSD() {
+    SpiBusLock lock;   // hold the shared bus across reconfigure + mount
     if (subghz_sd_mounted) {
       if (SD.exists("/")) return true;
       subghz_sd_mounted = false;
@@ -643,9 +644,12 @@ static uint32_t replayDecodeMinDwellMs() {
 
 static void tuneToIndex(uint16_t idx, bool persist = true) {
   currentFrequencyIndex = idx % freqCount();
-  ELECHOUSE_cc1101.setSidle();
-  ELECHOUSE_cc1101.setMHZ(subghz_frequency_list[currentFrequencyIndex] / 1000000.0);
-  ELECHOUSE_cc1101.SetRx();
+  {
+    SpiBusLock lock;   // retune cluster: idle+setMHZ+SetRx must see a consistent bus config
+    ELECHOUSE_cc1101.setSidle();
+    ELECHOUSE_cc1101.setMHZ(subghz_frequency_list[currentFrequencyIndex] / 1000000.0);
+    ELECHOUSE_cc1101.SetRx();
+  }
   if (persist) {
     EEPROM.put(ADDR_FREQ, currentFrequencyIndex);
     EEPROM.commit();
@@ -704,7 +708,9 @@ static bool replayAutoScanReadyForDecode(uint32_t now) {
   if (now < scanSettledAtMs) {
     return false;
   }
-  return ELECHOUSE_cc1101.getRssi() > replayRssiDecodeThreshold();
+  int16_t rssi;
+  { SpiBusLock lock; rssi = ELECHOUSE_cc1101.getRssi(); }
+  return rssi > replayRssiDecodeThreshold();
 }
 
 static void replaySampleRssiForScan(uint32_t now) {
@@ -715,7 +721,8 @@ static void replaySampleRssiForScan(uint32_t now) {
     return;
   }
 
-  const int rssi = ELECHOUSE_cc1101.getRssi();
+  int rssi;
+  { SpiBusLock lock; rssi = ELECHOUSE_cc1101.getRssi(); }
   const int detectThreshold = replayRssiDetectThreshold();
   const uint8_t detectHits = replayFreqIsLowBand(currentFrequencyIndex) ? RSSI_DETECT_HITS_LOW
                                                                         : RSSI_DETECT_HITS;
@@ -884,7 +891,8 @@ void updateDisplay() {
     replayDrawStaticChrome();
 
     const uint8_t modeState = replayModeState();
-    const int16_t rssi = ELECHOUSE_cc1101.getRssi();
+    int16_t rssi;
+    { SpiBusLock lock; rssi = ELECHOUSE_cc1101.getRssi(); }
     char freqBuf[16];
     char modeBuf[8];
     char bitBuf[8];
@@ -935,6 +943,7 @@ void updateDisplay() {
     s_replayDisp.valid = true;
 
     if (!autoScanEnabled) {
+      SpiBusLock lock;   // re-arm RX cluster under one consistent bus config
       ELECHOUSE_cc1101.setSidle();
       ELECHOUSE_cc1101.setMHZ(subghz_frequency_list[currentFrequencyIndex] / 1000000.0);
       ELECHOUSE_cc1101.SetRx();
@@ -975,7 +984,7 @@ void sendSignal() {
     mySwitch.disableReceive();
     delay(100);
     mySwitch.enableTransmit(REPLAY_TX_PIN);
-    ELECHOUSE_cc1101.SetTx();
+    { SpiBusLock lock; ELECHOUSE_cc1101.SetTx(); }
 
     tft.fillRect(0, 40, 240, kReplayStatusLineY - 40, TFT_BLACK);
 
@@ -992,7 +1001,7 @@ void sendSignal() {
     tft.setCursor(10, 30 + yshift);
     tft.print("Done!");
 
-    ELECHOUSE_cc1101.SetRx();
+    { SpiBusLock lock; ELECHOUSE_cc1101.SetRx(); }
     mySwitch.disableTransmit();
     delay(100);
     mySwitch.enableReceive(REPLAY_RX_PIN);
@@ -1014,7 +1023,8 @@ void do_sampling() {
   float ewmaRSSI = -50;
 
 for (int i = 0; i < samplesSUB; i++) {
-    int rssi = ELECHOUSE_cc1101.getRssi();
+    int rssi;
+    { SpiBusLock lock; rssi = ELECHOUSE_cc1101.getRssi(); }   // per-sample; spin-wait below stays lock-free
     rssi += 100;
 
     ewmaRSSI = (ALPHA * rssi) + ((1 - ALPHA) * ewmaRSSI);
@@ -1292,15 +1302,18 @@ void ReplayAttackSetup() {
   setTouchButtonInputEnabled(true);
   subghzSetReplayNavLabels();
 
-  ELECHOUSE_cc1101.setSpiPin(CC1101_SCK, CC1101_MISO, CC1101_MOSI, CC1101_CS);
+  {
+    SpiBusLock lock;   // CC1101 init: Init() reconfigures the shared bus — hold across the whole setup
+    ELECHOUSE_cc1101.setSpiPin(CC1101_SCK, CC1101_MISO, CC1101_MOSI, CC1101_CS);
 
-  ELECHOUSE_cc1101.Init();
-  ELECHOUSE_cc1101.setModulation(2);
-  ELECHOUSE_cc1101.setRxBW(500.0);
+    ELECHOUSE_cc1101.Init();
+    ELECHOUSE_cc1101.setModulation(2);
+    ELECHOUSE_cc1101.setRxBW(500.0);
 
-  ELECHOUSE_cc1101.setGDO(CC1101_GDO0, CC1101_GDO2);
+    ELECHOUSE_cc1101.setGDO(CC1101_GDO0, CC1101_GDO2);
 
-  ELECHOUSE_cc1101.SetRx();
+    ELECHOUSE_cc1101.SetRx();
+  }
 
   mySwitch.enableReceive(REPLAY_RX_PIN);
   mySwitch.enableTransmit(REPLAY_TX_PIN);
@@ -1537,7 +1550,9 @@ void ReplayAttackLoop() {
 
             EEPROM.put(ADDR_FREQ, currentFrequencyIndex);
             EEPROM.commit();
-            replayShowDetectNotice("DECODE", ELECHOUSE_cc1101.getRssi());
+            int16_t detRssi;
+            { SpiBusLock lock; detRssi = ELECHOUSE_cc1101.getRssi(); }
+            replayShowDetectNotice("DECODE", detRssi);
           }
         }
     }
@@ -1966,13 +1981,16 @@ void transmitProfile(int index) {
     if (!selectedValid) return;
     Profile profileToSend = selectedProfile;
 
-    ELECHOUSE_cc1101.setSidle();
-    ELECHOUSE_cc1101.setMHZ(profileToSend.frequency / 1000000.0);
+    {
+      SpiBusLock lock;   // idle+retune cluster
+      ELECHOUSE_cc1101.setSidle();
+      ELECHOUSE_cc1101.setMHZ(profileToSend.frequency / 1000000.0);
+    }
 
     mySwitch.disableReceive();
     delay(100);
     mySwitch.enableTransmit(SUBGHZ_TX_PIN);
-    ELECHOUSE_cc1101.SetTx();
+    { SpiBusLock lock; ELECHOUSE_cc1101.SetTx(); }
 
     profileClearContentArea(TFT_BLACK);
     tft.setCursor(10, 30 + yshift);
@@ -1992,7 +2010,7 @@ void transmitProfile(int index) {
     tft.setCursor(10, 30 + yshift);
     tft.print("Done!");
 
-    ELECHOUSE_cc1101.SetRx();
+    { SpiBusLock lock; ELECHOUSE_cc1101.SetRx(); }
     mySwitch.disableTransmit();
     delay(100);
     mySwitch.enableReceive(SUBGHZ_RX_PIN);
@@ -2200,9 +2218,12 @@ void saveSetup() {
     subghzRedrawNavChrome();
     uiDrawn = false;
 
-    ELECHOUSE_cc1101.Init();
-    ELECHOUSE_cc1101.setGDO(CC1101_GDO0, CC1101_GDO2);
-    ELECHOUSE_cc1101.SetRx();
+    {
+      SpiBusLock lock;   // CC1101 init reconfigures the shared bus — hold across Init+setGDO+SetRx
+      ELECHOUSE_cc1101.Init();
+      ELECHOUSE_cc1101.setGDO(CC1101_GDO0, CC1101_GDO2);
+      ELECHOUSE_cc1101.SetRx();
+    }
 
     mySwitch.enableReceive(SUBGHZ_RX_PIN);
     mySwitch.enableTransmit(SUBGHZ_TX_PIN);
@@ -2331,11 +2352,12 @@ static void subjammerToggleJam() {
   jammingRunning = !jammingRunning;
   if (jammingRunning) {
     Serial.println("Jamming started");
+    SpiBusLock lock;   // retune+TX cluster
     ELECHOUSE_cc1101.setMHZ(targetFrequency);
     ELECHOUSE_cc1101.SetTx();
   } else {
     Serial.println("Jamming stopped");
-    ELECHOUSE_cc1101.setSidle();
+    { SpiBusLock lock; ELECHOUSE_cc1101.setSidle(); }
     digitalWrite(TX_PIN, LOW);
   }
   updateDisplay();
@@ -2348,7 +2370,7 @@ static void subjammerFreqNext() {
   }
   currentFrequencyIndex = (currentFrequencyIndex + 1) % numFrequencies;
   targetFrequency = subghz_frequency_list[currentFrequencyIndex] / 1000000.0;
-  ELECHOUSE_cc1101.setMHZ(targetFrequency);
+  { SpiBusLock lock; ELECHOUSE_cc1101.setMHZ(targetFrequency); }
   updateDisplay();
   lastDebounceTime = millis();
 }
@@ -2359,12 +2381,13 @@ static void subjammerFreqPrev() {
   }
   currentFrequencyIndex = (currentFrequencyIndex - 1 + numFrequencies) % numFrequencies;
   targetFrequency = subghz_frequency_list[currentFrequencyIndex] / 1000000.0;
-  ELECHOUSE_cc1101.setMHZ(targetFrequency);
+  { SpiBusLock lock; ELECHOUSE_cc1101.setMHZ(targetFrequency); }
   updateDisplay();
   lastDebounceTime = millis();
 }
 
 static void subjammerApplyFrequency() {
+  SpiBusLock lock;   // retune + TX/idle cluster under one consistent bus config
   ELECHOUSE_cc1101.setMHZ(targetFrequency);
   if (jammingRunning) {
     ELECHOUSE_cc1101.SetTx();
@@ -2598,11 +2621,12 @@ void runUI() {
                   jammingRunning = !jammingRunning;
                     if (jammingRunning) {
                         Serial.println("Jamming started");
+                        SpiBusLock lock;   // retune+TX cluster
                         ELECHOUSE_cc1101.setMHZ(targetFrequency);
                         ELECHOUSE_cc1101.SetTx();
                     } else {
                         Serial.println("Jamming stopped");
-                        ELECHOUSE_cc1101.setSidle();
+                        { SpiBusLock lock; ELECHOUSE_cc1101.setSidle(); }
                         digitalWrite(TX_PIN, LOW);
                     }
                     updateDisplay();
@@ -2632,7 +2656,7 @@ void runUI() {
                 case 3:
                   currentFrequencyIndex = (currentFrequencyIndex - 1 + numFrequencies) % numFrequencies;
                   targetFrequency = subghz_frequency_list[currentFrequencyIndex] / 1000000.0;
-                  ELECHOUSE_cc1101.setMHZ(targetFrequency);
+                  { SpiBusLock lock; ELECHOUSE_cc1101.setMHZ(targetFrequency); }
                   Serial.print("Switched to: ");
                   Serial.print(targetFrequency);
                   Serial.println(" MHz");
@@ -2642,7 +2666,7 @@ void runUI() {
                  case 4:
                   currentFrequencyIndex = (currentFrequencyIndex + 1) % numFrequencies;
                   targetFrequency = subghz_frequency_list[currentFrequencyIndex] / 1000000.0;
-                  ELECHOUSE_cc1101.setMHZ(targetFrequency);
+                  { SpiBusLock lock; ELECHOUSE_cc1101.setMHZ(targetFrequency); }
                   Serial.print("Switched to: ");
                   Serial.print(targetFrequency);
                   Serial.println(" MHz");
@@ -2698,14 +2722,17 @@ void subjammerSetup() {
     drawStatusBar(readBatteryVoltage(), true);
     subghzRedrawNavChrome();
 
-    ELECHOUSE_cc1101.setSpiPin(CC1101_SCK, CC1101_MISO, CC1101_MOSI, CC1101_CS);
+    {
+      SpiBusLock lock;   // CC1101 jammer init reconfigures the shared bus — hold across the whole setup
+      ELECHOUSE_cc1101.setSpiPin(CC1101_SCK, CC1101_MISO, CC1101_MOSI, CC1101_CS);
 
-    ELECHOUSE_cc1101.Init();
-    ELECHOUSE_cc1101.setModulation(0);
-    ELECHOUSE_cc1101.setRxBW(500.0);
-    ELECHOUSE_cc1101.setPA(12);
-    ELECHOUSE_cc1101.setMHZ(targetFrequency);
-    ELECHOUSE_cc1101.SetTx();
+      ELECHOUSE_cc1101.Init();
+      ELECHOUSE_cc1101.setModulation(0);
+      ELECHOUSE_cc1101.setRxBW(500.0);
+      ELECHOUSE_cc1101.setPA(12);
+      ELECHOUSE_cc1101.setMHZ(targetFrequency);
+      ELECHOUSE_cc1101.SetTx();
+    }
 
     randomSeed(analogRead(0));
 
@@ -2778,20 +2805,26 @@ void subjammerLoop() {
     subjammerAutoSweepIfDue();
 
     if (jammingRunning) {
-        ELECHOUSE_cc1101.SetTx();
+        { SpiBusLock lock; ELECHOUSE_cc1101.SetTx(); }
 
         if (continuousMode) {
-            ELECHOUSE_cc1101.SpiWriteReg(CC1101_TXFIFO, 0xFF);
-            ELECHOUSE_cc1101.SpiStrobe(CC1101_STX);
+            {
+                SpiBusLock lock;   // FIFO fill + strobe must be atomic on the bus
+                ELECHOUSE_cc1101.SpiWriteReg(CC1101_TXFIFO, 0xFF);
+                ELECHOUSE_cc1101.SpiStrobe(CC1101_STX);
+            }
             digitalWrite(TX_PIN, HIGH);
         } else {
             for (int i = 0; i < 10; i++) {
                 uint32_t noise = random(16777216);
-                ELECHOUSE_cc1101.SpiWriteReg(CC1101_TXFIFO, noise >> 16);
-                ELECHOUSE_cc1101.SpiWriteReg(CC1101_TXFIFO, (noise >> 8) & 0xFF);
-                ELECHOUSE_cc1101.SpiWriteReg(CC1101_TXFIFO, noise & 0xFF);
-                ELECHOUSE_cc1101.SpiStrobe(CC1101_STX);
-                delayMicroseconds(50);
+                {
+                    SpiBusLock lock;   // one fill+strobe burst per iteration; released before the delay
+                    ELECHOUSE_cc1101.SpiWriteReg(CC1101_TXFIFO, noise >> 16);
+                    ELECHOUSE_cc1101.SpiWriteReg(CC1101_TXFIFO, (noise >> 8) & 0xFF);
+                    ELECHOUSE_cc1101.SpiWriteReg(CC1101_TXFIFO, noise & 0xFF);
+                    ELECHOUSE_cc1101.SpiStrobe(CC1101_STX);
+                }
+                delayMicroseconds(50);   // inter-burst delay stays lock-free
               }
           }
       }
