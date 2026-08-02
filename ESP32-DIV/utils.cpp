@@ -542,12 +542,25 @@ namespace BatteryTool {
 static uint16_t s_rawMv     = 0;
 static float    s_minV      = 99.0f;
 static float    s_maxV      = 0.0f;
+static float    s_emaV      = 0.0f;
 static uint32_t s_lastMs    = 0;
 static bool     s_header    = false;
 static char     s_i2c[96]   = "";
 static uint32_t s_lastScan  = 0;
 
-// Scan the whole I2C bus and list every responder into s_i2c. Used to find a
+// A device is only counted present if it ACKs 3 times in a row. A noisy /
+// weakly-pulled I2C bus throws spurious one-off ACKs at random addresses, so a
+// single probe invents "phantom" devices that come and go between scans.
+static bool i2cPresent(uint8_t addr) {
+  for (int k = 0; k < 3; k++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() != 0) return false;
+    delayMicroseconds(200);
+  }
+  return true;
+}
+
+// Scan the whole bus and list every STABLE responder into s_i2c. Used to find a
 // charge IC (e.g. an IP5306-I2C) that could report charging state; re-run live
 // so a device that only powers up under USB is caught.
 static void scanI2C() {
@@ -555,8 +568,7 @@ static void scanI2C() {
   size_t rem = sizeof(s_i2c);
   int    n = 0;
   for (uint8_t a = 0x08; a <= 0x77; a++) {
-    Wire.beginTransmission(a);
-    if (Wire.endTransmission() == 0) {
+    if (i2cPresent(a)) {
       int w = snprintf(p, rem, "%s%02X", n ? " " : "", a);
       if (w > 0 && (size_t)w < rem) { p += w; rem -= (size_t)w; }
       n++;
@@ -574,11 +586,11 @@ static uint16_t readRawMillivolts() {
   (void)analogReadMilliVolts(BATTERY_ADC_PIN);   // discard first sample
   delay(2);
   uint32_t sum = 0;
-  for (int i = 0; i < 16; i++) {
+  for (int i = 0; i < 32; i++) {
     sum += analogReadMilliVolts(BATTERY_ADC_PIN);
     delay(1);
   }
-  return (uint16_t)(sum / 16);
+  return (uint16_t)(sum / 32);
 #else
   return 0;
 #endif
@@ -598,6 +610,7 @@ static void drawRow(int y, const char* label, const char* value, uint16_t valCol
 void setup() {
   s_minV     = 99.0f;
   s_maxV     = 0.0f;
+  s_emaV     = 0.0f;
   s_lastMs   = 0;
   s_lastScan = 0;
   s_header   = false;
@@ -619,9 +632,14 @@ void loop() {
   s_lastMs = now;
 
   s_rawMv = readRawMillivolts();
-  const float pinV  = s_rawMv / 1000.0f;
-  const float ratio = (BATTERY_VDIV_R1 + BATTERY_VDIV_R2) / BATTERY_VDIV_R2;
-  const float vbat  = pinV * ratio;
+  const float pinV    = s_rawMv / 1000.0f;
+  const float ratio   = (BATTERY_VDIV_R1 + BATTERY_VDIV_R2) / BATTERY_VDIV_R2;
+  const float vbatRaw = pinV * ratio;
+  // Smooth: the 5.57x divider amplifies ADC noise (and USB-charge ripple), so an
+  // unsmoothed reading makes SOC jump ~20%. An EMA settles it to a stable value.
+  if (s_emaV <= 0.05f) s_emaV = vbatRaw;
+  else                 s_emaV = 0.12f * vbatRaw + 0.88f * s_emaV;
+  const float vbat = s_emaV;
   if (vbat < s_minV) s_minV = vbat;
   if (vbat > s_maxV) s_maxV = vbat;
   int pct = (int)::map((long)(vbat * 100.0f), 300, 420, 0, 100);
