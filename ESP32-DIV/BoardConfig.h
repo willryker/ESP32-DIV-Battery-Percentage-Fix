@@ -12,7 +12,11 @@
 #define BUZZER_PIN -1
 
 #define BATTERY_ADC_PIN 2
-#define BATTERY_VDIV_R1 100000.0f
+// Divider ratio empirically calibrated on hardware: multimeter read 3.525 V at
+// the cell while GPIO2 read 0.633 V, i.e. ratio = 3.525 / 0.633 = 5.569x (the
+// nominal 100k/100k "2x" was wrong — the fitted divider / S3 ADC give ~5.57x).
+// readBatteryVoltage() uses (R1+R2)/R2, so R1=456900, R2=100000 -> 5.569x.
+#define BATTERY_VDIV_R1 456900.0f
 #define BATTERY_VDIV_R2 100000.0f
 // Set to 0 to hide the on-screen touch nav bar (5 footer buttons).
 // Touch button input will still work when this is disabled.
