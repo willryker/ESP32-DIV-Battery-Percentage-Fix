@@ -539,12 +539,33 @@ float readBatteryVoltage() {
 // brownout under load), and probes the IP5306 charge IC on I2C (0x75).
 namespace BatteryTool {
 
-static uint16_t s_rawMv  = 0;
-static float    s_minV   = 99.0f;
-static float    s_maxV   = 0.0f;
-static bool     s_ip5306 = false;
-static uint32_t s_lastMs = 0;
-static bool     s_header = false;
+static uint16_t s_rawMv     = 0;
+static float    s_minV      = 99.0f;
+static float    s_maxV      = 0.0f;
+static uint32_t s_lastMs    = 0;
+static bool     s_header    = false;
+static char     s_i2c[96]   = "";
+static uint32_t s_lastScan  = 0;
+
+// Scan the whole I2C bus and list every responder into s_i2c. Used to find a
+// charge IC (e.g. an IP5306-I2C) that could report charging state; re-run live
+// so a device that only powers up under USB is caught.
+static void scanI2C() {
+  char*  p = s_i2c;
+  size_t rem = sizeof(s_i2c);
+  int    n = 0;
+  for (uint8_t a = 0x08; a <= 0x77; a++) {
+    Wire.beginTransmission(a);
+    if (Wire.endTransmission() == 0) {
+      int w = snprintf(p, rem, "%s%02X", n ? " " : "", a);
+      if (w > 0 && (size_t)w < rem) { p += w; rem -= (size_t)w; }
+      n++;
+    }
+  }
+  if (n == 0) {
+    snprintf(s_i2c, sizeof(s_i2c), "(none)");
+  }
+}
 
 static uint16_t readRawMillivolts() {
 #if defined(BATTERY_ADC_PIN) && (BATTERY_ADC_PIN >= 0)
@@ -575,14 +596,14 @@ static void drawRow(int y, const char* label, const char* value, uint16_t valCol
 }
 
 void setup() {
-  s_minV   = 99.0f;
-  s_maxV   = 0.0f;
-  s_lastMs = 0;
-  s_header = false;
+  s_minV     = 99.0f;
+  s_maxV     = 0.0f;
+  s_lastMs   = 0;
+  s_lastScan = 0;
+  s_header   = false;
   setTouchNavLabels("Back", nullptr, nullptr, nullptr, nullptr);
   featureClearContent(TFT_BLACK);
-  Wire.beginTransmission(0x75);   // IP5306-I2C charge IC (if fitted)
-  s_ip5306 = (Wire.endTransmission() == 0);
+  scanI2C();
 }
 
 void loop() {
@@ -630,13 +651,35 @@ void loop() {
   snprintf(buf, sizeof(buf), "x%.2f", (double)ratio);
   drawRow(166, "Div:", buf, UI_TEXT);
 
-  drawRow(192, "IP5306:", s_ip5306 ? "0x75 OK" : "absent", s_ip5306 ? UI_OK : UI_DIM_TEXT);
+  // Re-scan the I2C bus periodically so a charge IC that only powers up under
+  // USB is caught while the tool is open.
+  if ((uint32_t)(now - s_lastScan) >= 1500) {
+    s_lastScan = now;
+    scanI2C();
+  }
+
+  // USB host link: a PARTIAL charging hint. True only when a data-capable host
+  // (a computer) is attached; a dumb wall charger supplies power with no data
+  // link, so it reads "no" even while charging.
+  const bool usbLink = (bool)Serial;
 
   tft.setTextSize(1);
+  char line[96];
+
+  snprintf(line, sizeof(line), "I2C: %s            ", s_i2c);
+  tft.setTextColor(UI_TEXT, TFT_BLACK);
+  tft.setCursor(10, 196);
+  tft.print(line);
+
+  snprintf(line, sizeof(line), "USB link: %-3s (partial charge hint)", usbLink ? "yes" : "no");
+  tft.setTextColor(usbLink ? UI_OK : UI_DIM_TEXT, TFT_BLACK);
+  tft.setCursor(10, 212);
+  tft.print(line);
+
   tft.setTextColor(UI_DIM_TEXT, TFT_BLACK);
-  tft.setCursor(10, 226);
+  tft.setCursor(10, 228);
   const char* hint;
-  if (s_rawMv < 150)    hint = "IO2 ~0mV: pin floating (check wiring/HW)";
+  if (s_rawMv < 150)    hint = "IO2 ~0mV: pin floating (check wiring)   ";
   else if (vbat < 3.0f) hint = "Low: check divider ratio or the cell    ";
   else                  hint = "Reading looks valid                     ";
   tft.print(hint);
