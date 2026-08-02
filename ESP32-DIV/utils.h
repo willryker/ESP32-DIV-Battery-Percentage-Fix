@@ -110,6 +110,11 @@ namespace SdFileManager {
   void loop();
 }
 
+namespace BatteryTool {
+  void setup();
+  void loop();
+}
+
 namespace FeatureUI {
   enum class ButtonStyle : uint8_t { Primary, Secondary, Danger };
 

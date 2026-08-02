@@ -531,6 +531,121 @@ float readBatteryVoltage() {
 
 #endif
 }
+
+// ─────────────────────────── Battery Tool ───────────────────────────
+// Live diagnostic + monitor for the battery. Surfaces the RAW GPIO2 ADC
+// reading so a wrong percentage can be root-caused (floating pin vs. bad
+// divider ratio vs. display bug), tracks the min/max seen (catches sag /
+// brownout under load), and probes the IP5306 charge IC on I2C (0x75).
+namespace BatteryTool {
+
+static uint16_t s_rawMv  = 0;
+static float    s_minV   = 99.0f;
+static float    s_maxV   = 0.0f;
+static bool     s_ip5306 = false;
+static uint32_t s_lastMs = 0;
+static bool     s_header = false;
+
+static uint16_t readRawMillivolts() {
+#if defined(BATTERY_ADC_PIN) && (BATTERY_ADC_PIN >= 0)
+  pinMode(BATTERY_ADC_PIN, INPUT);
+  analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
+  (void)analogReadMilliVolts(BATTERY_ADC_PIN);   // discard first sample
+  delay(2);
+  uint32_t sum = 0;
+  for (int i = 0; i < 16; i++) {
+    sum += analogReadMilliVolts(BATTERY_ADC_PIN);
+    delay(1);
+  }
+  return (uint16_t)(sum / 16);
+#else
+  return 0;
+#endif
+}
+
+static void drawRow(int y, const char* label, const char* value, uint16_t valColor) {
+  tft.setTextSize(2);
+  tft.setTextColor(UI_DIM_TEXT, TFT_BLACK);
+  tft.setCursor(10, y);
+  tft.print(label);
+  tft.setTextColor(valColor, TFT_BLACK);
+  tft.setCursor(120, y);
+  tft.print(value);
+  tft.print("     ");   // pad to overwrite any longer previous value
+}
+
+void setup() {
+  s_minV   = 99.0f;
+  s_maxV   = 0.0f;
+  s_lastMs = 0;
+  s_header = false;
+  setTouchNavLabels("Back", nullptr, nullptr, nullptr, nullptr);
+  featureClearContent(TFT_BLACK);
+  Wire.beginTransmission(0x75);   // IP5306-I2C charge IC (if fitted)
+  s_ip5306 = (Wire.endTransmission() == 0);
+}
+
+void loop() {
+  if (featureExitButtonPressed()) {
+    feature_exit_requested = true;
+    return;
+  }
+  const uint32_t now = millis();
+  if (s_header && (uint32_t)(now - s_lastMs) < 400) {
+    delay(20);
+    return;
+  }
+  s_lastMs = now;
+
+  s_rawMv = readRawMillivolts();
+  const float pinV  = s_rawMv / 1000.0f;
+  const float ratio = (BATTERY_VDIV_R1 + BATTERY_VDIV_R2) / BATTERY_VDIV_R2;
+  const float vbat  = pinV * ratio;
+  if (vbat < s_minV) s_minV = vbat;
+  if (vbat > s_maxV) s_maxV = vbat;
+  int pct = (int)::map((long)(vbat * 100.0f), 300, 420, 0, 100);
+  pct = constrain(pct, 0, 100);
+
+  if (!s_header) {
+    tft.setTextSize(2);
+    tft.setTextColor(UI_WARN, TFT_BLACK);
+    tft.setCursor(10, 30);
+    tft.print("Battery");
+    s_header = true;
+  }
+
+  char buf[40];
+  snprintf(buf, sizeof(buf), "%u mV", (unsigned)s_rawMv);
+  drawRow(62, "IO2:", buf, s_rawMv > 100 ? UI_OK : TFT_RED);
+
+  snprintf(buf, sizeof(buf), "%.2f V", (double)vbat);
+  drawRow(88, "Batt:", buf, UI_TEXT);
+
+  snprintf(buf, sizeof(buf), "%d %%", pct);
+  drawRow(114, "SOC:", buf, pct > 20 ? UI_OK : TFT_RED);
+
+  snprintf(buf, sizeof(buf), "%.2f/%.2f", (double)(s_minV > 90.0f ? 0.0f : s_minV), (double)s_maxV);
+  drawRow(140, "Lo/Hi:", buf, UI_TEXT);
+
+  snprintf(buf, sizeof(buf), "x%.2f", (double)ratio);
+  drawRow(166, "Div:", buf, UI_TEXT);
+
+  drawRow(192, "IP5306:", s_ip5306 ? "0x75 OK" : "absent", s_ip5306 ? UI_OK : UI_DIM_TEXT);
+
+  tft.setTextSize(1);
+  tft.setTextColor(UI_DIM_TEXT, TFT_BLACK);
+  tft.setCursor(10, 226);
+  const char* hint;
+  if (s_rawMv < 150)    hint = "IO2 ~0mV: pin floating (check wiring/HW)";
+  else if (vbat < 3.0f) hint = "Low: check divider ratio or the cell    ";
+  else                  hint = "Reading looks valid                     ";
+  tft.print(hint);
+
+  delay(20);
+}
+
+} // namespace BatteryTool
+
 float readInternalTemperature() {
   float temperature = temperatureRead();
   return temperature;

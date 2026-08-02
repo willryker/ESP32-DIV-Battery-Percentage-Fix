@@ -83,12 +83,13 @@ const char *subghz_submenu_items[subghz_NUM_SUBMENU_ITEMS] = {
     "Saved Profile",
     "Back to Main Menu"};
 
-const int tools_NUM_SUBMENU_ITEMS = 5;
+const int tools_NUM_SUBMENU_ITEMS = 6;
 const char *tools_submenu_items[tools_NUM_SUBMENU_ITEMS] = {
     "Serial Monitor",
     "Update Firmware",
     "Touch Calibrate",
     "SD File Manager",
+    "Battery",
     "Back to Main Menu"};
 
 static constexpr uint8_t OTHER_LAYER_HOME = 0;
@@ -185,6 +186,7 @@ const unsigned char *tools_submenu_icons[tools_NUM_SUBMENU_ITEMS] = {
     bitmap_icon_follow,
     bitmap_icon_undo,
     bitmap_icon_sdcard,
+    bitmap_icon_power,
     bitmap_icon_go_back
 };
 
@@ -2314,8 +2316,9 @@ constexpr int TOOLS_IDX_TERMINAL = 0;
 constexpr int TOOLS_IDX_UPDATE   = 1;
 constexpr int TOOLS_IDX_TOUCH    = 2;
 constexpr int TOOLS_IDX_SD_FILES = 3;
+constexpr int TOOLS_IDX_BATTERY  = 4;
 constexpr int TOOLS_IDX_SETTINGS = -1;
-constexpr int TOOLS_IDX_BACK     = 4;
+constexpr int TOOLS_IDX_BACK     = 5;
 
 static void runToolsFeatureExitCleanup() {
     in_sub_menu = true;
@@ -2369,6 +2372,9 @@ static void launchToolsFeature(int idx) {
             break;
         case TOOLS_IDX_SD_FILES:
             runToolsFeature(idx, SdFileManager::setup, SdFileManager::loop);
+            break;
+        case TOOLS_IDX_BATTERY:
+            runToolsFeature(idx, BatteryTool::setup, BatteryTool::loop);
             break;
         default:
             break;
