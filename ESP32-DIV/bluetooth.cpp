@@ -2959,8 +2959,9 @@ void scannerSetup() {
 
   {
     SpiBusLock lock;   // reconfigure the shared bus to NRF24 wiring atomically
-    // TODO(spi-cleanup): magic pin numbers (SCK=13,MISO=11,MOSI=12,SS=4) — move to named NRF24_* macros.
-    SPI.begin(13, 11, 12, 4);
+    // NRF24 shares the peripheral bus (V2 schematic: SCK=IO12, MOSI=IO11, MISO=IO13).
+    // The prior literals (13,11,12) did not match the schematic — see NRF24_* in shared.h.
+    SPI.begin(NRF24_SCK, NRF24_MISO, NRF24_MOSI, NRF24_SS);
     SPI.setDataMode(SPI_MODE0);
     SPI.setFrequency(10000000);
     SPI.setBitOrder(MSBFIRST);

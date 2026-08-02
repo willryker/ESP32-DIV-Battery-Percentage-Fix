@@ -565,6 +565,25 @@ static const uint8_t OBF_WB[]   = {75, 97, 110, 109, 122, 92, 109, 107, 96, 38, 
 #endif
 #endif
 
+/* NRF24 SPI bus.
+ * All three nRF24L01 modules share the peripheral SPI bus with the SD card and
+ * CC1101 (V2 Shield-Schematic: SCK=IO12, MOSI=IO11, MISO=IO13 on U1/U2/U3).
+ * Aliased to the shared SD_* pins so every profile stays consistent. Per-radio
+ * chip-select is CSN_PIN_1/2/3 above; the RF24 driver toggles those itself, so
+ * the ss arg to SPI.begin is only the nominal bus default (radio #1's CSN). */
+#ifndef NRF24_SCK
+#define NRF24_SCK   SD_SCLK
+#endif
+#ifndef NRF24_MISO
+#define NRF24_MISO  SD_MISO
+#endif
+#ifndef NRF24_MOSI
+#define NRF24_MOSI  SD_MOSI
+#endif
+#ifndef NRF24_SS
+#define NRF24_SS    CSN_PIN_1
+#endif
+
 /* IR Remote (Record/Replay)
  * NOTE: Default pins overlap with the optional NRF24 #3 wiring above.
  * If you use NRF24 on CE_PIN_3/CSN_PIN_3, override these in your board config.
