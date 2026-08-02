@@ -1162,8 +1162,10 @@ void displayLogo(uint16_t color, int displayTime) {
   tft.print("by ");
   tftPrintObf(OBF_DN, sizeof(OBF_DN));
 
-  textX = screenWidth / 2.5;
   textY += 50;
+  // Center the version string horizontally based on its rendered width
+  // (textSize 1 / font 1 are still in effect from the "by" line above).
+  textX = (screenWidth - tft.textWidth(ESP32DIV_VERSION)) / 2;
   tft.setCursor(textX, textY);
   // Version is intentionally NOT obfuscated.
   tft.print(ESP32DIV_VERSION);
