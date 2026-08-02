@@ -41,6 +41,7 @@ enum CardType { UNKNOWN, MIFARE_CLASSIC, MIFARE_ULTRALIGHT, NTAG, MIFARE_DESFIRE
 enum class RfidUiEvt { None, Back, Primary };
 
 static void rfidAttachBus() {
+  SpiBusLock lock;   // reconfigure to PN532 wiring under the bus lock
   SPI.begin(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS);
   if (s_hwOk) {
     s_nfc.begin();
@@ -51,6 +52,7 @@ static void rfidAttachBus() {
 
 /** Return shared SPI to SD wiring without remounting (fast). Call restoreSdAfterSharedSpi once when leaving RFID. */
 static void rfidRestoreBus() {
+  SpiBusLock lock;   // reconfigure back to SD wiring under the bus lock
 #if defined(SD_SCLK) && defined(SD_MISO) && defined(SD_MOSI) && defined(SD_CS)
   SPI.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
 #endif
@@ -1461,6 +1463,7 @@ static bool tryMagicBackdoor() {
   uint8_t commands[][2] = {{0x40, 0x00}, {0x43, 0x00}};
   uint8_t response[32];
   uint8_t responseLength = 32;
+  SpiBusLock lock;   // small back-to-back probe burst; serialize against other bus owners
   for (int i = 0; i < 2; i++) {
     if (s_nfc.inDataExchange(commands[i], sizeof(commands[i]), response, &responseLength)) {
       return true;
@@ -1473,7 +1476,9 @@ static bool tryMagicBackdoor() {
 static bool rfidTagStillPresent(const uint8_t* uid, uint8_t uidLen) {
   uint8_t uidNow[7] = {0};
   uint8_t lenNow = 0;
-  if (!s_nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uidNow, &lenNow, 80)) {
+  bool seen;
+  { SpiBusLock lock; seen = s_nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uidNow, &lenNow, 80); }
+  if (!seen) {
     return false;
   }
   if (lenNow != uidLen) {
@@ -1501,6 +1506,7 @@ static CardType detectCardType(uint8_t* uid, uint8_t uidLength) {
     return UNKNOWN;
   }
   uint8_t keyA[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  SpiBusLock lock;   // sequential probe chain is one logical burst; hold the bus across it
   if (s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, 0, 0, keyA)) {
     return MIFARE_CLASSIC;
   }
@@ -1565,17 +1571,20 @@ bool begin() {
     return true;
   }
   rfidAttachBus();
-  s_nfc.begin();
-  uint32_t ver = s_nfc.getFirmwareVersion();
-  if (!ver) {
-    rfidPn532VerStr(0);
-    restoreSdAfterSharedSpi();
-    return false;
+  {
+    SpiBusLock lock;   // PN532 init burst; lock released on either return path (RAII)
+    s_nfc.begin();
+    uint32_t ver = s_nfc.getFirmwareVersion();
+    if (!ver) {
+      rfidPn532VerStr(0);
+      restoreSdAfterSharedSpi();
+      return false;
+    }
+    rfidPn532VerStr(ver);
+    s_nfc.SAMConfig();
+    s_nfc.setPassiveActivationRetries(0xFF);
+    s_hwOk = true;
   }
-  rfidPn532VerStr(ver);
-  s_nfc.SAMConfig();
-  s_nfc.setPassiveActivationRetries(0xFF);
-  s_hwOk = true;
   rfidRestoreBus();
   return true;
 }
@@ -1603,6 +1612,7 @@ static bool rfidTargetSendResponse(const uint8_t* payload, uint8_t payloadLen) {
   }
   tx[0] = 0x8E;
   memcpy(tx + 1, payload, payloadLen);
+  SpiBusLock lock;
   return s_nfc.setDataTarget(tx, (uint8_t)(payloadLen + 1u)) != 0;
 }
 
@@ -1625,11 +1635,14 @@ static bool rfidTargetWaitReader(const char* tickMsg, unsigned long timeoutMs, u
       }
       rfidListenTick(tickMsg, t0);
 
-      if (s_nfc.AsTarget()) {
-        const uint8_t maxLen = *rxLen;
-        *rxLen = maxLen;
-        if (s_nfc.getDataTarget(rx, rxLen)) {
-          return true;
+      {
+        SpiBusLock lock;   // per-iteration; UI pump / delay(25) below stay lock-free
+        if (s_nfc.AsTarget()) {
+          const uint8_t maxLen = *rxLen;
+          *rxLen = maxLen;
+          if (s_nfc.getDataTarget(rx, rxLen)) {
+            return true;
+          }
         }
       }
 
@@ -1664,7 +1677,9 @@ static bool rfidListenIso14443a(const char* title, const char* footer, uint8_t* 
       if (rfidPollCancel()) {
         return false;
       }
-      if (s_nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, uidLenOut, 150)) {
+      bool got;
+      { SpiBusLock lock; got = s_nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, uidLenOut, 150); }
+      if (got) {
         return true;
       }
       if (millis() - t0 > timeoutMs) {
@@ -1714,12 +1729,21 @@ void sessionErase() {
 
   uint8_t keyA[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
   uint8_t emptyBlock[16] = {0};
-  if (!s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, 4, 0, keyA)) {
+  bool authOk;
+  bool writeOk = false;
+  {
+    SpiBusLock lock;   // auth->write on block 4 is one atomic burst
+    authOk = s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, 4, 0, keyA);
+    if (authOk) {
+      writeOk = s_nfc.mifareclassic_WriteDataBlock(4, emptyBlock);
+    }
+  }
+  if (!authOk) {
     rfidRestoreBus();
     rfidResultAndDismiss("Erase", "Auth failed", "Could not authenticate block 4 with key A.");
     return;
   }
-  if (!s_nfc.mifareclassic_WriteDataBlock(4, emptyBlock)) {
+  if (!writeOk) {
     rfidRestoreBus();
     rfidResultAndDismiss("Erase", "Write failed", "Block 4 write was rejected.");
     return;
@@ -1780,8 +1804,12 @@ void sessionDump() {
         }
         return;
       }
-      const bool ok = s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, block, 0, keyA) &&
-                      s_nfc.mifareclassic_ReadDataBlock(block, data);
+      bool ok;
+      {
+        SpiBusLock lock;   // per-block auth->read burst; delay(25) below stays lock-free
+        ok = s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, block, 0, keyA) &&
+             s_nfc.mifareclassic_ReadDataBlock(block, data);
+      }
       if (ok) {
         blocksRead++;
         bool nz = false;
@@ -1825,7 +1853,9 @@ void sessionDump() {
         return;
       }
       uint8_t pg[4];
-      if (s_nfc.mifareultralight_ReadPage(page, pg)) {
+      bool pageOk;
+      { SpiBusLock lock; pageOk = s_nfc.mifareultralight_ReadPage(page, pg); }
+      if (pageOk) {
         blocksRead++;
         bool nz = false;
         for (int i = 0; i < 4; i++) {
@@ -1917,14 +1947,21 @@ void sessionDecodeAccess() {
   uint8_t keyB[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
   uint8_t blk[16] = {0};
   bool authenticated = false;
-  (void)tryMagicBackdoor();
-  if (s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, 7, 0, keyA)) {
-    authenticated = true;
-  } else if (s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, 7, 1, keyB)) {
-    authenticated = true;
+  bool readOk = false;
+  (void)tryMagicBackdoor();   // helper takes the bus lock internally
+  {
+    SpiBusLock lock;   // auth(A|B)->read on block 7 is one atomic burst
+    if (s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, 7, 0, keyA)) {
+      authenticated = true;
+    } else if (s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, 7, 1, keyB)) {
+      authenticated = true;
+    }
+    if (authenticated) {
+      readOk = s_nfc.mifareclassic_ReadDataBlock(7, blk);
+    }
   }
 
-  if (!authenticated || !s_nfc.mifareclassic_ReadDataBlock(7, blk)) {
+  if (!authenticated || !readOk) {
     rfidRestoreBus();
     rfidResultAndDismiss("Decode Access", "Failed", "Could not read block 7 (sector 1 trailer).");
     return;
@@ -1999,7 +2036,9 @@ void sessionJamReader() {
     }
 
     rxLen = sizeof(rx);
-    if (s_nfc.getDataTarget(rx, &rxLen)) {
+    bool gotData;
+    { SpiBusLock lock; gotData = s_nfc.getDataTarget(rx, &rxLen); }
+    if (gotData) {
       pendingRx = true;
       const unsigned long now = millis();
       if (now - lastUiMs >= 200) {
@@ -2021,8 +2060,7 @@ void sessionJamReader() {
     delay(5);
   }
 
-  s_nfc.SAMConfig();
-  s_nfc.setPassiveActivationRetries(0xFF);
+  { SpiBusLock lock; s_nfc.SAMConfig(); s_nfc.setPassiveActivationRetries(0xFF); }
   rfidRestoreBus();
   if (rfidSessionExitRequested()) {
     return;
@@ -2089,7 +2127,9 @@ void sessionDisruptEmulate() {
     }
 
     rxLen = sizeof(rx);
-    if (s_nfc.getDataTarget(rx, &rxLen)) {
+    bool gotData;
+    { SpiBusLock lock; gotData = s_nfc.getDataTarget(rx, &rxLen); }
+    if (gotData) {
       pendingRx = true;
       const unsigned long now = millis();
       if (now - lastUiMs >= 200) {
@@ -2111,8 +2151,7 @@ void sessionDisruptEmulate() {
     delay(5);
   }
 
-  s_nfc.SAMConfig();
-  s_nfc.setPassiveActivationRetries(0xFF);
+  { SpiBusLock lock; s_nfc.SAMConfig(); s_nfc.setPassiveActivationRetries(0xFF); }
   rfidRestoreBus();
   if (rfidSessionExitRequested()) {
     return;
@@ -2144,8 +2183,13 @@ void sessionCardReader() {
   if (ct == MIFARE_CLASSIC) {
     uint8_t keyA[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     uint8_t data[16];
-    if (s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, 0, 0, keyA) &&
-        s_nfc.mifareclassic_ReadDataBlock(0, data)) {
+    bool blk0Ok;
+    {
+      SpiBusLock lock;   // auth->read on block 0 is one atomic burst
+      blk0Ok = s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, 0, 0, keyA) &&
+               s_nfc.mifareclassic_ReadDataBlock(0, data);
+    }
+    if (blk0Ok) {
       formatClassicBlock0(classicBlk, sizeof(classicBlk), data);
     } else {
       snprintf(classicBlk, sizeof(classicBlk),
@@ -2157,9 +2201,12 @@ void sessionCardReader() {
   if (ct == MIFARE_ULTRALIGHT || ct == NTAG) {
     uint8_t pg[4][4];
     bool ok = true;
-    for (int pi = 0; pi < 4; pi++) {
-      if (!s_nfc.mifareultralight_ReadPage((uint8_t)(4 + pi), pg[pi])) {
-        ok = false;
+    {
+      SpiBusLock lock;   // short fixed 4-page read burst, no inter-page delay
+      for (int pi = 0; pi < 4; pi++) {
+        if (!s_nfc.mifareultralight_ReadPage((uint8_t)(4 + pi), pg[pi])) {
+          ok = false;
+        }
       }
     }
     if (ok) {
@@ -2289,19 +2336,22 @@ void sessionClone() {
       }
       for (uint8_t block = 0; block < 3; block++) {
         uint8_t blockNum = (uint8_t)(sector * 4 + block);
-        bool auth =
-            s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, blockNum, 0, keyA);
-        if (!auth) {
-          auth = s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, blockNum, 1, keyB);
-        }
-        if (auth) {
-          if (s_nfc.mifareclassic_ReadDataBlock(blockNum, data)) {
-            memcpy(s_srcData[sector][block], data, 16);
+        {
+          SpiBusLock lock;   // per-block auth(A|B)->read burst; delay(18) below stays lock-free
+          bool auth =
+              s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, blockNum, 0, keyA);
+          if (!auth) {
+            auth = s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, blockNum, 1, keyB);
+          }
+          if (auth) {
+            if (s_nfc.mifareclassic_ReadDataBlock(blockNum, data)) {
+              memcpy(s_srcData[sector][block], data, 16);
+            } else {
+              readOk = false;
+            }
           } else {
             readOk = false;
           }
-        } else {
-          readOk = false;
         }
         delay(18);
       }
@@ -2322,7 +2372,9 @@ void sessionClone() {
         rfidRestoreBus();
         return;
       }
-      if (s_nfc.mifareultralight_ReadPage(page, data)) {
+      bool pageOk;
+      { SpiBusLock lock; pageOk = s_nfc.mifareultralight_ReadPage(page, data); }
+      if (pageOk) {
         memcpy(s_srcPages[page], data, 4);
       } else {
         readOk = false;
@@ -2398,6 +2450,7 @@ void sessionClone() {
     bool uidWritten = false;
 #if RFID_UID_CLONE
     if (magic) {
+      SpiBusLock lock;   // auth(A|B|0)->write on block 0 (UID) is one atomic burst
       bool ok = s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, 0, 0, keyA);
       if (!ok) {
         ok = s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, 0, 1, keyB);
@@ -2448,22 +2501,25 @@ void sessionClone() {
           continue;
         }
 #endif
-        bool auth =
-            s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, blockNum, 0, keyA);
-        if (!auth) {
-          auth = s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, blockNum, 1, keyB);
-        }
-        if (!auth) {
-          auth = s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, blockNum, 0, keyZero);
-        }
-        if (auth) {
-          if (s_nfc.mifareclassic_WriteDataBlock(blockNum, s_srcData[sector][block])) {
-            blocksDone++;
+        {
+          SpiBusLock lock;   // per-block auth(A|B|0)->write burst; delay(28) below stays lock-free
+          bool auth =
+              s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, blockNum, 0, keyA);
+          if (!auth) {
+            auth = s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, blockNum, 1, keyB);
+          }
+          if (!auth) {
+            auth = s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, blockNum, 0, keyZero);
+          }
+          if (auth) {
+            if (s_nfc.mifareclassic_WriteDataBlock(blockNum, s_srcData[sector][block])) {
+              blocksDone++;
+            } else {
+              cloneOk = false;
+            }
           } else {
             cloneOk = false;
           }
-        } else {
-          cloneOk = false;
         }
         delay(28);
       }
@@ -2487,7 +2543,9 @@ void sessionClone() {
         }
         return;
       }
-      if (s_nfc.mifareultralight_WritePage(page, s_srcPages[page])) {
+      bool wrOk;
+      { SpiBusLock lock; wrOk = s_nfc.mifareultralight_WritePage(page, s_srcPages[page]); }
+      if (wrOk) {
         blocksDone++;
       } else {
         cloneOk = false;
@@ -2601,9 +2659,18 @@ void sessionTagDisrupt() {
     maliciousData[7] = 0x00;
     maliciousData[8] = 0x00;
 
-    if (!s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, block, 0, key)) {
+    bool authOk;
+    bool wrOk = false;
+    {
+      SpiBusLock lock;   // per-trailer auth->write burst; delay(35) below stays lock-free
+      authOk = s_nfc.mifareclassic_AuthenticateBlock(uid, uidLength, block, 0, key);
+      if (authOk) {
+        wrOk = s_nfc.mifareclassic_WriteDataBlock(block, maliciousData);
+      }
+    }
+    if (!authOk) {
       authFail++;
-    } else if (s_nfc.mifareclassic_WriteDataBlock(block, maliciousData)) {
+    } else if (wrOk) {
       any = true;
       trailersOk++;
     }
