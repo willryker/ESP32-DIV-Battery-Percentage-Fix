@@ -637,7 +637,7 @@ void loop() {
     return;
   }
   const uint32_t now = millis();
-  if (s_header && (uint32_t)(now - s_lastMs) < 400) {
+  if (s_header && (uint32_t)(now - s_lastMs) < 1000) {   // ~1s: fewer GPIO2/buzzer ticks
     delay(20);
     return;
   }
@@ -979,8 +979,18 @@ static void statusBarTask(void* ) {
 
   for (;;) {
     updateSdCardStatus();
-    const float v = readBatteryVoltage();
-    currentBatteryVoltage = v;
+    // Read the battery only occasionally. GPIO2 is shared with the buzzer, so
+    // every ADC read ticks it; reading at the 400ms loop rate made an audible
+    // rhythm. The voltage changes slowly, so ~20s is plenty and makes ticks rare.
+    {
+      static uint32_t s_lastBattReadMs = 0;
+      const uint32_t nowMs = millis();
+      if (s_lastBattReadMs == 0 || (uint32_t)(nowMs - s_lastBattReadMs) >= 20000u) {
+        s_lastBattReadMs = nowMs;
+        currentBatteryVoltage = readBatteryVoltage();
+      }
+    }
+    const float v = currentBatteryVoltage;
 
     const bool batteryKnown = isfinite(v) && v > 0.1f;
     const int pct = batteryKnown ? constrain(::map((int)(v * 100.f), 300, 420, 0, 100), 0, 100) : -1;
