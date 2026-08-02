@@ -1474,7 +1474,7 @@ static bool tryMagicBackdoor() {
 
 /** True if the same ISO14443A tag is still on the coil (short poll). */
 static bool rfidTagStillPresent(const uint8_t* uid, uint8_t uidLen) {
-  uint8_t uidNow[7] = {0};
+  uint8_t uidNow[10] = {0};   // 4/7/10-byte UID; size for max (PN532 write is unclamped)
   uint8_t lenNow = 0;
   bool seen;
   { SpiBusLock lock; seen = s_nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uidNow, &lenNow, 80); }
@@ -1705,7 +1705,7 @@ void sessionErase() {
       "Hold a Classic tag on the coil.";
 
   rfidAttachBus();
-  uint8_t uid[7] = {0};
+  uint8_t uid[10] = {0};   // ISO14443A UID is 4/7/10 bytes; size for max so PN532 can't overflow it
   uint8_t uidLength = 0;
   if (!rfidListenIso14443a("Erase", "Cancel", uid, &uidLength, (unsigned long)RFID_TAG_LISTEN_TIMEOUT_MS,
                            "Classic tag — block 4 erase", kIntro)) {
@@ -1762,7 +1762,7 @@ void sessionDump() {
       "Present tag on the coil.";
 
   rfidAttachBus();
-  uint8_t uid[7] = {0};
+  uint8_t uid[10] = {0};   // ISO14443A UID is 4/7/10 bytes; size for max so PN532 can't overflow it
   uint8_t uidLength = 0;
   if (!rfidListenIso14443a("Dump", "Cancel", uid, &uidLength, (unsigned long)RFID_TAG_LISTEN_TIMEOUT_MS,
                            "Present tag to dump", kIntro)) {
@@ -1921,7 +1921,7 @@ void sessionDecodeAccess() {
       "Present a Classic tag on the coil.";
 
   rfidAttachBus();
-  uint8_t uid[7] = {0};
+  uint8_t uid[10] = {0};   // ISO14443A UID is 4/7/10 bytes; size for max so PN532 can't overflow it
   uint8_t uidLength = 0;
   if (!rfidListenIso14443a("Decode Access", "Cancel", uid, &uidLength,
                            (unsigned long)RFID_TAG_LISTEN_TIMEOUT_MS, "Classic tag", kIntro)) {
@@ -2164,7 +2164,7 @@ void sessionCardReader() {
       "Passive ISO14443A read.\n\n"
       "Hold the tag flat on the coil. UID, tag type, and memory samples appear here after scan.";
 
-  uint8_t uid[7] = {0};
+  uint8_t uid[10] = {0};   // ISO14443A UID is 4/7/10 bytes; size for max so PN532 can't overflow it
   uint8_t uidLength = 0;
   rfidAttachBus();
 
@@ -2270,13 +2270,13 @@ static uint8_t s_srcData[16][3][16];
 static uint8_t s_srcPages[256][4];
 
 void sessionClone() {
-  uint8_t uid[7] = {0};
+  uint8_t uid[10] = {0};   // ISO14443A UID is 4/7/10 bytes; size for max so PN532 can't overflow it
   uint8_t uidLength = 0;
   uint8_t keyA[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
   uint8_t keyB[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
   uint8_t keyZero[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
   uint8_t data[16];
-  uint8_t srcUidCopy[7];
+  uint8_t srcUidCopy[10];   // holds uid (up to 10 bytes) for the clone UID-write step
 
 #if RFID_UID_CLONE
   const char* introFoot =
@@ -2592,7 +2592,7 @@ void sessionTagDisrupt() {
       "Only use tags you own or are allowed to modify.\n\n"
       "Present a Classic tag (~12 s window).";
 
-  uint8_t uid[7] = {0};
+  uint8_t uid[10] = {0};   // ISO14443A UID is 4/7/10 bytes; size for max so PN532 can't overflow it
   uint8_t uidLength = 0;
   uint8_t maliciousData[16];
   uint8_t key[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};

@@ -1427,6 +1427,10 @@ namespace BleScan {
 
 BLEScan* bleScan;
 BLEScanResults bleResults;
+// Published device count for cross-core readers (status bar). bleResults itself
+// must NOT be read from another core — it is reassigned here and its internal
+// vector would be freed mid-read. Writers publish the count right after assigning.
+static volatile int s_lastBleCount = 0;
 bool isScanning = false;
 bool isDetailView = false;
 int currentIndex = 0;
@@ -1540,6 +1544,7 @@ static void bgBleScanTask(void* ) {
       isScanning = true;
       setStatusBarBleState(StatusBarRadioState::Scanning);
       bleResults = bleScan->start(2, false);
+      s_lastBleCount = bleResults.getCount();   // publish for cross-core status-bar reader
       isScanning = false;
       bgBleScanRunning = false;
       if (bleResults.getCount() >= 0) {
@@ -1604,6 +1609,7 @@ void startBLEScan() {
   StatusLedService::startActivity(StatusLedService::Mode::BleScan);
   displayScanning();
   bleResults = bleScan->start(5, false);
+  s_lastBleCount = bleResults.getCount();   // publish for cross-core status-bar reader
   fgBleScanInProgress = false;
   isScanning = false;
   screenNeedsUpdate = true;
@@ -2021,6 +2027,12 @@ void bleScanLoop() {
   }
 }
 
+void stopBackgroundScanner() {
+  // Quiesce an in-flight background BLE scan so a feature can safely take the
+  // radio. The task stays alive but idles (gated by feature_active).
+  stopBgBleScanIfRunning();
+}
+
 void startBackgroundScanner() {
   if (!settings().autoBleScan) return;
   if (bgBleScanTaskHandle != nullptr) return;
@@ -2036,8 +2048,9 @@ void startBackgroundScanner() {
 }
 
 int getLastCount() {
-
-  return bleResults.getCount();
+  // Read the published count, NOT bleResults.getCount() — this runs on the
+  // status-bar task (other core) while bleResults may be reassigned.
+  return s_lastBleCount;
 }
 
 void exit() {

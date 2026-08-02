@@ -293,7 +293,7 @@ static void ptmStartRadioAndPcapOnce() {
   wifi_mode_t wm = WIFI_MODE_NULL;
   const esp_err_t gm = esp_wifi_get_mode(&wm);
   if (gm == ESP_ERR_WIFI_NOT_INIT) {
-    tcpip_adapter_init();
+    esp_netif_init();   // modern replacement for the deprecated tcpip_adapter_init()
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
@@ -2029,6 +2029,12 @@ static void bgWifiScanTask(void* ) {
       vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
   }
+}
+
+void stopBackgroundScanner() {
+  // Quiesce an in-flight background WiFi scan so a feature can safely take the
+  // radio / read the scan-list cache. The task stays alive but idles.
+  stopBgWifiScanIfRunning();
 }
 
 void startBackgroundScanner() {
@@ -6823,7 +6829,7 @@ void performWebOTAUpdate() {
       }
       performWebOTAUpdate();
     }
-  }, [&inUpdate, &totalUploaded]() {
+  }, [&inUpdate]() {   // totalUploaded is static (file/function scope) — not capturable, used directly
     HTTPUpload& upload = server.upload();
     if (upload.status == UPLOAD_FILE_START) {
       tft.fillRect(0, 37, 240, 320, TFT_BLACK);

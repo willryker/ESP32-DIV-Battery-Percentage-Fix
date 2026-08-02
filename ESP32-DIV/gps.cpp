@@ -3408,12 +3408,16 @@ static void wardStopForegroundScanTask() {
     return;
   }
   s_fgScanStop = true;
-  for (int i = 0; i < 1200 && s_fgScanTask; i++) {
+  // Wait unbounded until the task confirms it has exited. The task nulls
+  // s_fgScanTask right after its scan loop (past its last use of the caller's
+  // File) and before vTaskDelete. Bounding this risked returning while the task
+  // was still alive and dereferencing the File that session() then closes ->
+  // dangling pointer / heap corruption. The task cannot block forever: it
+  // rechecks s_fgScanStop after each scan iteration, and scans self-timeout.
+  while (s_fgScanTask) {
     delay(10);
   }
-  if (!s_fgScanTask) {
-    s_fgScanStop = false;
-  }
+  s_fgScanStop = false;
 }
 
 static void wardBgTask(void* /*param*/) {

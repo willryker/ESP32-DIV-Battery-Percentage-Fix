@@ -859,6 +859,11 @@ void startStatusBarTask() {
 
 void pauseBackgroundRadioTasks() {
   GpsWardriver::stopBackgroundIfRunning();
+  // Also quiesce the background WiFi/BLE scanners. Callers enter a feature and
+  // then touch the radio / scan-list cache; a lingering bg scan could free the
+  // SDK scan list (WiFi.scanDelete) or reassign bleResults mid-read.
+  WifiScan::stopBackgroundScanner();
+  BleScan::stopBackgroundScanner();
 }
 
 void updateStatusBar() {
