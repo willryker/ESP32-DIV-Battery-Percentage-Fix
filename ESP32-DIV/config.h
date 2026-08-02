@@ -22,8 +22,7 @@
 #include <esp_wifi.h>
 #include <esp_wifi_types.h>
 #include <esp_system.h>
-#include <esp_event.h>
-#include <esp_event_loop.h>
+#include <esp_event.h>   // provides esp_event_legacy.h (system_event_t) too
 #include <nvs_flash.h>
 
 // Use NimBLE for all BLE functionality, via the BleCompat shim which
