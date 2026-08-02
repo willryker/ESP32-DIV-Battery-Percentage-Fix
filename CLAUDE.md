@@ -71,9 +71,20 @@ across blocking radio scans; the always-on status-bar task only reads the SD
 card-detect GPIO, so it never touches the bus.
 
 ## TODO / not yet done
-- NRF24 uses magic pin numbers `SPI.begin(13,11,12,4)` in bluetooth.cpp — move
-  to named `NRF24_*` macros and verify against the V2 schematic.
-- `esp_event_loop.h` deprecation warning — harmless, worth cleaning.
+- **NRF24 pins (DONE)** — replaced `SPI.begin(13,11,12,4)` with named `NRF24_*`
+  macros in shared.h, aliased to the shared SD_* bus. Verifying against the V2
+  Shield-Schematic showed the old literals were WRONG: the three nRF24L01 and the
+  CC1101 share SCK=IO12/MOSI=IO11/MISO=IO13. Fixed and confirmed on hardware
+  (2.4GHz works).
+- **`esp_event_loop.h` deprecation (DONE)** — removed the redundant include from
+  config.h. `esp_event.h` (already included) provides everything used, including
+  `system_event_t` via esp_event_legacy.h; the deprecated header only re-included
+  esp_event.h and emitted the #warning.
+- **PN532 SPI pins (latent bug)** — `PN532_MISO`/`PN532_MOSI` in shared.h (11/13)
+  are swapped vs the shared bus (should be MISO=13/MOSI=11). Harmless today (no
+  PN532 fitted on this board — GPS is the installed add-on), but fix to
+  `PN532_MISO 13 / PN532_MOSI 11` before anyone adds a PN532. Note `PN532_SS 4`
+  also collides with NRF24 #1 CSN (=4).
 
 ## Phase 2b — detailed plan (guard CC1101 + PN532 transaction bodies)
 Goal = complete mutual exclusion. Phase 2 made the background SD writers
