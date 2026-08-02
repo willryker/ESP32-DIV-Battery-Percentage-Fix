@@ -1,0 +1,296 @@
+diff --git a/ESP32-DIV/ESP32-DIV.ino b/ESP32-DIV/ESP32-DIV.ino
+index 010d7a5..14fed31 100644
+--- a/ESP32-DIV/ESP32-DIV.ino
++++ b/ESP32-DIV/ESP32-DIV.ino
+@@ -3299,6 +3299,9 @@ void setup() {
+ 
+   Serial.begin(115200);
+   Serial.println("[boot] start");
++
++  spiBusInit();   // create the shared-SPI mutex before SD/radios come up
++
+   BuzzerService::begin();
+ 
+   tft.init();
+diff --git a/ESP32-DIV/SpiBus.cpp b/ESP32-DIV/SpiBus.cpp
+new file mode 100644
+index 0000000..dd498f7
+--- /dev/null
++++ b/ESP32-DIV/SpiBus.cpp
+@@ -0,0 +1,33 @@
++#include "SpiBus.h"
++
++// Recursive so a guarded helper can be called from an already-guarded caller
++// on the same task without self-deadlock.
++static SemaphoreHandle_t s_spiMutex = nullptr;
++
++void spiBusInit() {
++  if (s_spiMutex == nullptr) {
++    s_spiMutex = xSemaphoreCreateRecursiveMutex();
++  }
++}
++
++bool spiBusTake(uint32_t timeoutMs) {
++  // Lazy safety net: if a caller runs before setup() created the mutex, make it
++  // now rather than silently skipping serialization.
++  if (s_spiMutex == nullptr) {
++    spiBusInit();
++  }
++  // If allocation failed we must not hard-block the whole device; degrade to
++  // "unserialized but running" rather than deadlocking on a null handle.
++  if (s_spiMutex == nullptr) {
++    return true;
++  }
++  const TickType_t ticks =
++      (timeoutMs == 0xFFFFFFFFUL) ? portMAX_DELAY : pdMS_TO_TICKS(timeoutMs);
++  return xSemaphoreTakeRecursive(s_spiMutex, ticks) == pdTRUE;
++}
++
++void spiBusGive() {
++  if (s_spiMutex != nullptr) {
++    xSemaphoreGiveRecursive(s_spiMutex);
++  }
++}
+diff --git a/ESP32-DIV/SpiBus.h b/ESP32-DIV/SpiBus.h
+new file mode 100644
+index 0000000..e98d11e
+--- /dev/null
++++ b/ESP32-DIV/SpiBus.h
+@@ -0,0 +1,40 @@
++#pragma once
++//
++// SpiBus — arbitration for the shared peripheral SPI bus.
++//
++// On ESP32-DIV the SD card, PN532 (RFID), CC1101 (SubGHz) and NRF24 (2.4GHz)
++// all share ONE SPI peripheral (the global `SPI` object). Individual modules
++// reconfigure that bus with SPI.begin(...) for their own wiring and then run
++// transactions. With the UI on one core and background scan / wardriving /
++// pcap tasks on the other core, two owners can touch the bus at the same time
++// and corrupt each other — a classic source of random hangs and resets.
++//
++// This module provides a single recursive mutex that serializes access to the
++// shared bus. Take it around any "reconfigure + use" sequence. It is recursive,
++// so nesting (a guarded helper called from an already-guarded caller) is safe.
++//
++// NOTE: the display (TFT_eSPI) and the touch controller (touchscreenSPI) live
++// on their own separate buses and are intentionally NOT managed here.
++//
++#include <Arduino.h>
++#include <SPI.h>
++#include "freertos/FreeRTOS.h"
++#include "freertos/semphr.h"
++
++// Create the mutex. Call once from setup() before any task or SPI use.
++void spiBusInit();
++
++// Serialize access to the shared SPI bus. Recursive: safe to nest within a
++// single task. Returns true when the lock was acquired.
++bool spiBusTake(uint32_t timeoutMs = 0xFFFFFFFFUL);  // default: block until free
++void spiBusGive();
++
++// RAII guard: acquires on construction, releases at end of scope (including on
++// early return). Check `.ok` if a finite timeout was requested.
++struct SpiBusLock {
++  bool ok;
++  explicit SpiBusLock(uint32_t timeoutMs = 0xFFFFFFFFUL) { ok = spiBusTake(timeoutMs); }
++  ~SpiBusLock() { if (ok) spiBusGive(); }
++  SpiBusLock(const SpiBusLock&) = delete;
++  SpiBusLock& operator=(const SpiBusLock&) = delete;
++};
+diff --git a/ESP32-DIV/bluetooth.cpp b/ESP32-DIV/bluetooth.cpp
+index cc88669..4d79be4 100644
+--- a/ESP32-DIV/bluetooth.cpp
++++ b/ESP32-DIV/bluetooth.cpp
+@@ -2115,6 +2115,7 @@ bool isSelectButtonPressed() {
+ }
+ 
+ byte getRegister(byte r) {
++  SpiBusLock lock;   // NRF24 transaction — serialize against SD/other bus owners
+   byte c;
+   digitalWrite(CSN, LOW);
+   SPI.transfer(r & 0x1F);
+@@ -2128,6 +2129,7 @@ bool carrierDetected() {
+ }
+ 
+ void setRegister(byte r, byte v) {
++  SpiBusLock lock;   // NRF24 transaction — serialize against SD/other bus owners
+   digitalWrite(CSN, LOW);
+   SPI.transfer((r & 0x1F) | 0x20);
+   SPI.transfer(v);
+@@ -2955,10 +2957,14 @@ void scannerSetup() {
+   Print("[+] Scanner ready", UI_WARN, false);
+   redrawTouchButtonBar();
+ 
+-  SPI.begin(13, 11, 12, 4);
+-  SPI.setDataMode(SPI_MODE0);
+-  SPI.setFrequency(10000000);
+-  SPI.setBitOrder(MSBFIRST);
++  {
++    SpiBusLock lock;   // reconfigure the shared bus to NRF24 wiring atomically
++    // TODO(spi-cleanup): magic pin numbers (SCK=13,MISO=11,MOSI=12,SS=4) — move to named NRF24_* macros.
++    SPI.begin(13, 11, 12, 4);
++    SPI.setDataMode(SPI_MODE0);
++    SPI.setFrequency(10000000);
++    SPI.setBitOrder(MSBFIRST);
++  }
+ 
+   pinMode(CE, OUTPUT);
+   pinMode(CSN, OUTPUT);
+diff --git a/ESP32-DIV/ducky.cpp b/ESP32-DIV/ducky.cpp
+index dd07e72..c2e160e 100644
+--- a/ESP32-DIV/ducky.cpp
++++ b/ESP32-DIV/ducky.cpp
+@@ -331,6 +331,7 @@ static void updateIconAnimation() {
+ 
+ static bool mountSD() {
+   if (sd_mounted) return true;
++  SpiBusLock lock;   // hold the shared bus across reconfigure + mount
+ #ifdef SD_CD
+   pinMode(SD_CD, INPUT_PULLUP);
+ #endif
+diff --git a/ESP32-DIV/gps.cpp b/ESP32-DIV/gps.cpp
+index 441c746..ef84d94 100644
+--- a/ESP32-DIV/gps.cpp
++++ b/ESP32-DIV/gps.cpp
+@@ -3260,6 +3260,8 @@ static void wardDoWifiScanLog(File& logf, uint32_t now, uint32_t* linesWr, uint3
+   if (cap > (int)s_cfgMaxAps) {
+     cap = (int)s_cfgMaxAps;
+   }
++  {
++  SpiBusLock lock;   // hold the shared bus across the SD row-write burst
+   for (int i = 0; i < cap; ++i) {
+     const String ss = WiFi.SSID(i);
+     const char* ssidc = ss.c_str();
+@@ -3286,6 +3288,7 @@ static void wardDoWifiScanLog(File& logf, uint32_t now, uint32_t* linesWr, uint3
+     (*linesWr)++;
+   }
+   logf.flush();
++  }
+   WiFi.scanDelete();
+ }
+ 
+@@ -3318,13 +3321,15 @@ static void wardDoBleScanLog(File& logf, uint32_t now, uint32_t* linesWr, uint32
+   const int n = results.getCount();
+   if (n <= 0) {
+     wardLogPush("BLE: 0 dev");
+-    logf.flush();
++    { SpiBusLock lock; logf.flush(); }
+     return;
+   }
+   int cap = n;
+   if (cap > (int)s_cfgMaxAps) {
+     cap = (int)s_cfgMaxAps;
+   }
++  {
++  SpiBusLock lock;   // hold the shared bus across the SD row-write burst
+   for (int i = 0; i < cap; ++i) {
+     BLEAdvertisedDevice d = results.getDevice(i);
+     char mac[24];
+@@ -3346,6 +3351,7 @@ static void wardDoBleScanLog(File& logf, uint32_t now, uint32_t* linesWr, uint32
+     (*linesWr)++;
+   }
+   logf.flush();
++  }
+ }
+ 
+ static void wardRunScansForMode(File& logf, uint32_t now, uint32_t* linesWr, uint32_t* scanCt) {
+diff --git a/ESP32-DIV/rfid.cpp b/ESP32-DIV/rfid.cpp
+index 66fa216..0ac08a9 100644
+--- a/ESP32-DIV/rfid.cpp
++++ b/ESP32-DIV/rfid.cpp
+@@ -41,6 +41,7 @@ enum CardType { UNKNOWN, MIFARE_CLASSIC, MIFARE_ULTRALIGHT, NTAG, MIFARE_DESFIRE
+ enum class RfidUiEvt { None, Back, Primary };
+ 
+ static void rfidAttachBus() {
++  SpiBusLock lock;   // reconfigure to PN532 wiring under the bus lock
+   SPI.begin(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS);
+   if (s_hwOk) {
+     s_nfc.begin();
+@@ -51,6 +52,7 @@ static void rfidAttachBus() {
+ 
+ /** Return shared SPI to SD wiring without remounting (fast). Call restoreSdAfterSharedSpi once when leaving RFID. */
+ static void rfidRestoreBus() {
++  SpiBusLock lock;   // reconfigure back to SD wiring under the bus lock
+ #if defined(SD_SCLK) && defined(SD_MISO) && defined(SD_MOSI) && defined(SD_CS)
+   SPI.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
+ #endif
+diff --git a/ESP32-DIV/shared.h b/ESP32-DIV/shared.h
+index 2264288..879299d 100644
+--- a/ESP32-DIV/shared.h
++++ b/ESP32-DIV/shared.h
+@@ -2,6 +2,7 @@
+ #define SHARED_H
+ #include <stdint.h>
+ #include "BoardConfig.h"
++#include "SpiBus.h"   // shared SPI bus arbitration (mutex + SpiBusLock)
+ 
+ /*──────────────────── Colors ────────────────────*/
+ const uint16_t GRAY = 0x8410, BLUE = 0x001F, RED = 0xF800,
+diff --git a/ESP32-DIV/subghz.cpp b/ESP32-DIV/subghz.cpp
+index b2323e2..a16d3f8 100644
+--- a/ESP32-DIV/subghz.cpp
++++ b/ESP32-DIV/subghz.cpp
+@@ -44,6 +44,7 @@ namespace {
+ 
+   static bool subghz_sd_mounted = false;
+   static bool subghzMountSD() {
++    SpiBusLock lock;   // hold the shared bus across reconfigure + mount
+     if (subghz_sd_mounted) {
+       if (SD.exists("/")) return true;
+       subghz_sd_mounted = false;
+diff --git a/ESP32-DIV/utils.cpp b/ESP32-DIV/utils.cpp
+index 38c6d49..01f4571 100644
+--- a/ESP32-DIV/utils.cpp
++++ b/ESP32-DIV/utils.cpp
+@@ -958,6 +958,7 @@ static SPIClass s_sdSpi(FSPI);
+ #endif
+ 
+ void sdSpiInit() {
++  SpiBusLock lock;   // serialize bus reconfigure against other owners/cores
+ #if defined(SD_SCLK) && defined(SD_MISO) && defined(SD_MOSI) && defined(SD_CS)
+ #if TOUCH_SHARES_TFT_SPI
+   s_sdSpi.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
+@@ -968,6 +969,7 @@ void sdSpiInit() {
+ }
+ 
+ bool sdMountChipSelect(uint8_t cs) {
++  SpiBusLock lock;   // hold the bus across the mount attempt
+ #if TOUCH_SHARES_TFT_SPI
+   return SD.begin(cs, s_sdSpi);
+ #else
+diff --git a/ESP32-DIV/wifi.cpp b/ESP32-DIV/wifi.cpp
+index ebcf85c..6c02a99 100644
+--- a/ESP32-DIV/wifi.cpp
++++ b/ESP32-DIV/wifi.cpp
+@@ -151,6 +151,7 @@ static QueueHandle_t pcapFreeQ = nullptr;
+ static QueueHandle_t pcapWriteQ = nullptr;
+ 
+ static bool pcapMountSD() {
++  SpiBusLock lock;   // hold the shared bus across reconfigure + mount
+   if (pcapMounted) {
+     if (SD.exists("/")) return true;
+     pcapMounted = false;
+@@ -217,6 +218,7 @@ static void pcapDisableAndCloseFile() {
+   }
+ 
+   if (pcapFile) {
++    SpiBusLock lock;   // guard the SD flush/close
+     pcapFile.flush();
+     pcapFile.close();
+   }
+@@ -238,6 +240,7 @@ static void pcapStart() {
+ 
+   pcapStop();
+ 
++  SpiBusLock lock;   // hold the bus across dir-create, path-scan, open, header write
+   if (!pcapEnsureDir(CAPTURE_DIR)) return;
+   if (!pcapMakeNextPath(pcapPath)) return;
+ 
+@@ -828,6 +831,7 @@ void ptmLoop() {
+   esp_wifi_set_promiscuous(true);
+ 
+   if (pcapEnabled && pcapFile && pcapWriteQ && pcapFreeQ) {
++    SpiBusLock lock;   // hold the shared bus across the SD write/flush burst
+     uint8_t slotIdx;
+ 
+     uint16_t drained = 0;
