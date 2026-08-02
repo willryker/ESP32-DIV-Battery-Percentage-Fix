@@ -958,6 +958,7 @@ static SPIClass s_sdSpi(FSPI);
 #endif
 
 void sdSpiInit() {
+  SpiBusLock lock;   // serialize bus reconfigure against other owners/cores
 #if defined(SD_SCLK) && defined(SD_MISO) && defined(SD_MOSI) && defined(SD_CS)
 #if TOUCH_SHARES_TFT_SPI
   s_sdSpi.begin(SD_SCLK, SD_MISO, SD_MOSI, SD_CS);
@@ -968,6 +969,7 @@ void sdSpiInit() {
 }
 
 bool sdMountChipSelect(uint8_t cs) {
+  SpiBusLock lock;   // hold the bus across the mount attempt
 #if TOUCH_SHARES_TFT_SPI
   return SD.begin(cs, s_sdSpi);
 #else

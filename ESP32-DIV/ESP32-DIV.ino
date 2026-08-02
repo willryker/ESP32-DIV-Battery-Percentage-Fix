@@ -3299,6 +3299,9 @@ void setup() {
 
   Serial.begin(115200);
   Serial.println("[boot] start");
+
+  spiBusInit();   // create the shared-SPI mutex before SD/radios come up
+
   BuzzerService::begin();
 
   tft.init();

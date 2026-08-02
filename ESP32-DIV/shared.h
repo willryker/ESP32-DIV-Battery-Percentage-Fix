@@ -2,6 +2,7 @@
 #define SHARED_H
 #include <stdint.h>
 #include "BoardConfig.h"
+#include "SpiBus.h"   // shared SPI bus arbitration (mutex + SpiBusLock)
 
 /*──────────────────── Colors ────────────────────*/
 const uint16_t GRAY = 0x8410, BLUE = 0x001F, RED = 0xF800,

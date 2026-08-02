@@ -151,6 +151,7 @@ static QueueHandle_t pcapFreeQ = nullptr;
 static QueueHandle_t pcapWriteQ = nullptr;
 
 static bool pcapMountSD() {
+  SpiBusLock lock;   // hold the shared bus across reconfigure + mount
   if (pcapMounted) {
     if (SD.exists("/")) return true;
     pcapMounted = false;
@@ -217,6 +218,7 @@ static void pcapDisableAndCloseFile() {
   }
 
   if (pcapFile) {
+    SpiBusLock lock;   // guard the SD flush/close
     pcapFile.flush();
     pcapFile.close();
   }
@@ -238,6 +240,7 @@ static void pcapStart() {
 
   pcapStop();
 
+  SpiBusLock lock;   // hold the bus across dir-create, path-scan, open, header write
   if (!pcapEnsureDir(CAPTURE_DIR)) return;
   if (!pcapMakeNextPath(pcapPath)) return;
 
@@ -828,6 +831,7 @@ void ptmLoop() {
   esp_wifi_set_promiscuous(true);
 
   if (pcapEnabled && pcapFile && pcapWriteQ && pcapFreeQ) {
+    SpiBusLock lock;   // hold the shared bus across the SD write/flush burst
     uint8_t slotIdx;
 
     uint16_t drained = 0;

@@ -2115,6 +2115,7 @@ bool isSelectButtonPressed() {
 }
 
 byte getRegister(byte r) {
+  SpiBusLock lock;   // NRF24 transaction — serialize against SD/other bus owners
   byte c;
   digitalWrite(CSN, LOW);
   SPI.transfer(r & 0x1F);
@@ -2128,6 +2129,7 @@ bool carrierDetected() {
 }
 
 void setRegister(byte r, byte v) {
+  SpiBusLock lock;   // NRF24 transaction — serialize against SD/other bus owners
   digitalWrite(CSN, LOW);
   SPI.transfer((r & 0x1F) | 0x20);
   SPI.transfer(v);
@@ -2955,10 +2957,14 @@ void scannerSetup() {
   Print("[+] Scanner ready", UI_WARN, false);
   redrawTouchButtonBar();
 
-  SPI.begin(13, 11, 12, 4);
-  SPI.setDataMode(SPI_MODE0);
-  SPI.setFrequency(10000000);
-  SPI.setBitOrder(MSBFIRST);
+  {
+    SpiBusLock lock;   // reconfigure the shared bus to NRF24 wiring atomically
+    // TODO(spi-cleanup): magic pin numbers (SCK=13,MISO=11,MOSI=12,SS=4) — move to named NRF24_* macros.
+    SPI.begin(13, 11, 12, 4);
+    SPI.setDataMode(SPI_MODE0);
+    SPI.setFrequency(10000000);
+    SPI.setBitOrder(MSBFIRST);
+  }
 
   pinMode(CE, OUTPUT);
   pinMode(CSN, OUTPUT);

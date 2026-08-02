@@ -3260,6 +3260,8 @@ static void wardDoWifiScanLog(File& logf, uint32_t now, uint32_t* linesWr, uint3
   if (cap > (int)s_cfgMaxAps) {
     cap = (int)s_cfgMaxAps;
   }
+  {
+  SpiBusLock lock;   // hold the shared bus across the SD row-write burst
   for (int i = 0; i < cap; ++i) {
     const String ss = WiFi.SSID(i);
     const char* ssidc = ss.c_str();
@@ -3286,6 +3288,7 @@ static void wardDoWifiScanLog(File& logf, uint32_t now, uint32_t* linesWr, uint3
     (*linesWr)++;
   }
   logf.flush();
+  }
   WiFi.scanDelete();
 }
 
@@ -3318,13 +3321,15 @@ static void wardDoBleScanLog(File& logf, uint32_t now, uint32_t* linesWr, uint32
   const int n = results.getCount();
   if (n <= 0) {
     wardLogPush("BLE: 0 dev");
-    logf.flush();
+    { SpiBusLock lock; logf.flush(); }
     return;
   }
   int cap = n;
   if (cap > (int)s_cfgMaxAps) {
     cap = (int)s_cfgMaxAps;
   }
+  {
+  SpiBusLock lock;   // hold the shared bus across the SD row-write burst
   for (int i = 0; i < cap; ++i) {
     BLEAdvertisedDevice d = results.getDevice(i);
     char mac[24];
@@ -3346,6 +3351,7 @@ static void wardDoBleScanLog(File& logf, uint32_t now, uint32_t* linesWr, uint32
     (*linesWr)++;
   }
   logf.flush();
+  }
 }
 
 static void wardRunScansForMode(File& logf, uint32_t now, uint32_t* linesWr, uint32_t* scanCt) {

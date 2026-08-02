@@ -331,6 +331,7 @@ static void updateIconAnimation() {
 
 static bool mountSD() {
   if (sd_mounted) return true;
+  SpiBusLock lock;   // hold the shared bus across reconfigure + mount
 #ifdef SD_CD
   pinMode(SD_CD, INPUT_PULLUP);
 #endif
