@@ -507,15 +507,16 @@ float readBatteryVoltage() {
   pinMode(BATTERY_ADC_PIN, INPUT);
   analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
 
-  // Discard the first ADC reading after configuring the pin.
+  // Discard the first ADC reading, then sample as a FAST burst. GPIO2 is shared
+  // with the buzzer transistor, so keeping the pin high-Z only ~1ms (not ~60ms)
+  // makes the per-read tick inaudible. Noise is handled by the caller's EMA.
   analogReadMilliVolts(BATTERY_ADC_PIN);
-  delay(2);
+  delayMicroseconds(300);
 
   uint64_t totalMillivolts = 0;
 
   for (int i = 0; i < sampleCount; i++) {
     totalMillivolts += analogReadMilliVolts(BATTERY_ADC_PIN);
-    delay(2);
   }
 
   const float averageMillivolts =
@@ -592,11 +593,10 @@ static uint16_t readRawMillivolts() {
   pinMode(BATTERY_ADC_PIN, INPUT);
   analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
   (void)analogReadMilliVolts(BATTERY_ADC_PIN);   // discard first sample
-  delay(2);
+  delayMicroseconds(300);
   uint32_t sum = 0;
-  for (int i = 0; i < 32; i++) {
+  for (int i = 0; i < 32; i++) {   // fast burst: keep GPIO2 high-Z only ~1ms (buzzer tick)
     sum += analogReadMilliVolts(BATTERY_ADC_PIN);
-    delay(1);
   }
   const uint16_t mv = (uint16_t)(sum / 32);
   // Drive GPIO2 low between reads to keep the shared buzzer transistor off.
